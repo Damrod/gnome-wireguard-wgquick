@@ -1,0 +1,11 @@
+{
+  "description": "Enable/Disable Wireguard tunnels",
+  "name": "WireGuard-VPN-extension",
+  "shell-version": [
+    "45","46","47","48","49"
+  ],
+  "gettext-domain": "gnome-wireguard-wgquick@damrod.github.com",
+  "url": "https://github.com/damrod/gnome-wireguard-wgquick",
+  "uuid": "gnome-wireguard-wgquick@damrod.github.com",
+  "version": 15
+}

@@ -157,8 +157,8 @@ const Indicator = GObject.registerClass(
             item._connection = connection;
             let active = active_interfaces();
             item.setToggleState(active.includes(connection.id));
-            item.connect('activate', () => {
-                if (item._switch.state === true) {
+            item.connect('toggled', (item, state) => {
+                if (state === true) {
                     let actives = active_interfaces();
                     if (actives.length > 0 && !actives.includes(connection.id)) {
                         Main.notify(_('Another Wireguard tunnel is active. Stop it first.'));

@@ -86,7 +86,7 @@ export default class WireguardPreferences extends ExtensionPreferences {
         const add_label = new Gtk.Label({ label: 'Add a Wireguard .conf file', valign: Gtk.Align.CENTER });
         add_group.add(add_label);
 
-        const button = new Gtk.Button({ label: 'Choose a Wireguard Configuration file-R4' });
+        const button = new Gtk.Button({ label: 'Choose a Wireguard Configuration file' });
         const settings = this.getSettings();
 
         button.connect('clicked', () => {

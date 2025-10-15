@@ -35,7 +35,16 @@ function stored_configs() {
         }
         en.close(null);
     } catch (e) {}
-    return configs;
+    // dedupe by id, keep order
+    let seen = new Set();
+    let unique = [];
+    for (let c of configs) {
+        if (!seen.has(c.id)) {
+            seen.add(c.id);
+            unique.push(c);
+        }
+    }
+    return unique;
 }
 
 function copy_to_storage(src) {
@@ -61,6 +70,7 @@ function delete_stored(path) {
 
 export default class WireguardPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
+        this._prefs_window = window; // used for transient dialogs
         const page = new Adw.PreferencesPage();
         const group = new Adw.PreferencesGroup();
         page.add(group);
@@ -68,7 +78,8 @@ export default class WireguardPreferences extends ExtensionPreferences {
         const top_label = new Gtk.Label({ label: 'Stored Wireguard configs (copied to user data dir)', valign: Gtk.Align.CENTER });
         group.add(top_label);
 
-        const rows_group = new Adw.PreferencesGroup();
+        // make rows_group mutable so we can replace it cleanly
+        let rows_group = new Adw.PreferencesGroup();
         page.add(rows_group);
 
         const add_group = new Adw.PreferencesGroup();
@@ -79,13 +90,11 @@ export default class WireguardPreferences extends ExtensionPreferences {
         const settings = this.getSettings();
 
         button.connect('clicked', () => {
-            try {
-                GLib.spawn_command_line_sync(`bash -lc 'echo "prefs: button clicked" >> /tmp/wg-prefs.log'`);
-            } catch (e) {}
+            log('prefs: button clicked');
 
             try {
                 const parentWindow = button.get_root();
-                GLib.spawn_command_line_sync(`bash -lc 'echo "prefs: got parentWindow=${parentWindow}" >> /tmp/wg-prefs.log'`);
+                log(`prefs: got parentWindow=${parentWindow}`);
 
                 const fc = new Gtk.FileChooserNative({
                     title: 'Choose a Wireguard .conf file',
@@ -100,58 +109,54 @@ export default class WireguardPreferences extends ExtensionPreferences {
 
                 fc.connect('response', (dialog, response) => {
                     try {
-                        GLib.spawn_command_line_sync(`bash -lc 'echo "prefs: response signal fired, response=${response}" >> /tmp/wg-prefs.log'`);
+                        log(`prefs: response signal fired, response=${response}`);
 
                         if (response === Gtk.ResponseType.ACCEPT) {
                             const file = dialog.get_file();
-                            GLib.spawn_command_line_sync(`bash -lc 'echo "prefs: selected file=${file ? file.get_path() : "null"}" >> /tmp/wg-prefs.log'`);
+                            log(`prefs: selected file=${file ? file.get_path() : "null"}`);
 
                             if (file) {
-                                try { copy_to_storage(file.get_path()); } catch (e) {
-                                    GLib.spawn_command_line_sync(`bash -lc 'echo "prefs: copy_to_storage failed: ${e}" >> /tmp/wg-prefs.log'`);
+                                try {
+                                    copy_to_storage(file.get_path());
+                                } catch (e) {
+                                    log(`prefs: copy_to_storage failed: ${e}`);
                                 }
 
                                 try {
                                     settings.set_uint('last-refresh', Math.floor(Date.now() / 1000));
-                                    GLib.spawn_command_line_sync(`bash -lc 'echo "prefs: wrote last-refresh" >> /tmp/wg-prefs.log'`);
+                                    log('prefs: wrote last-refresh');
                                 } catch (e) {
-                                    GLib.spawn_command_line_sync(`bash -lc 'echo "prefs: settings write failed: ${e}" >> /tmp/wg-prefs.log'`);
+                                    log(`prefs: settings write failed: ${e}`);
                                 }
 
                                 try {
-                                    let child = rows_group.get_first_child();
-                                    while (child) {
-                                        let next = child.get_next_sibling();    // grab next before removing
-                                        try {
-                                            rows_group.remove(child);
-                                        } catch (e) {
-                                            // fallback if remove isn't available on this widget
-                                            const parent = child.get_parent();
-                                            if (parent && parent.remove)
-                                                parent.remove(child);
-                                            else
-                                                child.set_parent(null);
-                                        }
-                                        child = next;
-                                    }
-                                    this._create_rows(rows_group);
-                                    GLib.spawn_command_line_sync(`bash -lc 'echo "prefs: rebuilt rows_group" >> /tmp/wg-prefs.log'`);
+                                    // create a fresh group, populate it, then swap it in.
+                                    const new_group = new Adw.PreferencesGroup();
+                                    this._create_rows(new_group);
+
+                                    // add new group to page then remove old one
+                                    page.add(new_group);
+                                    try { page.remove(rows_group); } catch (e) { log(`prefs: page.remove failed: ${e}`); }
+
+                                    // update reference so further actions operate on new_group
+                                    rows_group = new_group;
+                                    log('prefs: replaced rows_group with new populated group');
                                 } catch (e) {
-                                    GLib.spawn_command_line_sync(`bash -lc 'echo "prefs: _create_rows failed: ${e}" >> /tmp/wg-prefs.log'`);
+                                    log(`prefs: _create_rows failed: ${e}`);
                                 }
                             }
                         }
                     } catch (e) {
-                        GLib.spawn_command_line_sync(`bash -lc 'echo "prefs: exception in response: ${e}" >> /tmp/wg-prefs.log'`);
+                        log(`prefs: exception in response: ${e}`);
                     } finally {
                         try { dialog.destroy(); } catch (e) {}
                     }
                 });
 
                 fc.show();
-                GLib.spawn_command_line_sync(`bash -lc 'echo "prefs: file chooser shown" >> /tmp/wg-prefs.log'`);
+                log('prefs: file chooser shown');
             } catch (e) {
-                GLib.spawn_command_line_sync(`bash -lc 'echo "prefs: exception in clicked handler: ${e}" >> /tmp/wg-prefs.log'`);
+                log(`prefs: exception in clicked handler: ${e}`);
             }
         });
         add_group.add(button);
@@ -168,11 +173,25 @@ export default class WireguardPreferences extends ExtensionPreferences {
             const row = new Adw.ActionRow({ title: c.id });
             let del_btn = new Gtk.Button({ label: 'Delete' });
             del_btn.connect('clicked', () => {
-                const dialog = new Gtk.MessageDialog({ transient_for: null, modal: true, message_type: Gtk.MessageType.QUESTION, buttons: Gtk.ButtonsType.YES_NO, text: `Delete ${c.id}?` });
+                const dialog = new Gtk.MessageDialog({
+                    transient_for: this._prefs_window || null,
+                    modal: true,
+                    message_type: Gtk.MessageType.QUESTION,
+                    buttons: Gtk.ButtonsType.YES_NO,
+                    text: `Delete ${c.id}?`
+                });
                 dialog.connect('response', (d, resp) => {
                     if (resp === Gtk.ResponseType.YES) {
                         delete_stored(c.path);
-                        group.remove(row);
+                        try {
+                            // safe removal: prefer actual parent.remove(row)
+                            const parent = row.get_parent();
+                            if (parent && parent.remove) parent.remove(row);
+                            else if (group.remove) group.remove(row);
+                            else row.set_parent(null);
+                        } catch (e) {
+                            log(`prefs: remove row after delete failed: ${e}`);
+                        }
                     }
                     d.destroy();
                 });

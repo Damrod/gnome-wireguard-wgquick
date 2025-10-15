@@ -75,24 +75,84 @@ export default class WireguardPreferences extends ExtensionPreferences {
         const add_label = new Gtk.Label({ label: 'Add a Wireguard .conf file', valign: Gtk.Align.CENTER });
         add_group.add(add_label);
 
-        const button = new Gtk.Button({ label: 'Choose a Wireguard Configuration file' });
+        const button = new Gtk.Button({ label: 'Choose a Wireguard Configuration file-R4' });
+        const settings = this.getSettings();
+
         button.connect('clicked', () => {
-            let select_win = new Gtk.FileChooserDialog({ use_header_bar: 1, title: 'Choose a Wireguard .conf file', action: Gtk.FileChooserAction.OPEN, modal: true });
-            let filter = new Gtk.FileFilter();
-            filter.add_suffix('conf');
-            select_win.add_filter(filter);
-            select_win.add_button('Add', -5).connect('clicked', () => {
-                let f = select_win.get_file();
-                if (f) {
-                    copy_to_storage(f.get_path());
-                    // rebuild list
-                    while (rows_group.get_n_children() > 0) rows_group.remove(rows_group.get_first_child());
-                    this._create_rows(rows_group);
-                }
-                select_win.destroy();
-            });
-            select_win.add_button('Cancel', -6).connect('clicked', () => select_win.destroy());
-            select_win.present();
+            try {
+                GLib.spawn_command_line_sync(`bash -lc 'echo "prefs: button clicked" >> /tmp/wg-prefs.log'`);
+            } catch (e) {}
+
+            try {
+                const parentWindow = button.get_root();
+                GLib.spawn_command_line_sync(`bash -lc 'echo "prefs: got parentWindow=${parentWindow}" >> /tmp/wg-prefs.log'`);
+
+                const fc = new Gtk.FileChooserNative({
+                    title: 'Choose a Wireguard .conf file',
+                    transient_for: parentWindow,
+                    modal: true,
+                    action: Gtk.FileChooserAction.OPEN,
+                });
+
+                const filter = new Gtk.FileFilter();
+                filter.add_suffix('conf');
+                fc.add_filter(filter);
+
+                fc.connect('response', (dialog, response) => {
+                    try {
+                        GLib.spawn_command_line_sync(`bash -lc 'echo "prefs: response signal fired, response=${response}" >> /tmp/wg-prefs.log'`);
+
+                        if (response === Gtk.ResponseType.ACCEPT) {
+                            const file = dialog.get_file();
+                            GLib.spawn_command_line_sync(`bash -lc 'echo "prefs: selected file=${file ? file.get_path() : "null"}" >> /tmp/wg-prefs.log'`);
+
+                            if (file) {
+                                try { copy_to_storage(file.get_path()); } catch (e) {
+                                    GLib.spawn_command_line_sync(`bash -lc 'echo "prefs: copy_to_storage failed: ${e}" >> /tmp/wg-prefs.log'`);
+                                }
+
+                                try {
+                                    settings.set_uint('last-refresh', Math.floor(Date.now() / 1000));
+                                    GLib.spawn_command_line_sync(`bash -lc 'echo "prefs: wrote last-refresh" >> /tmp/wg-prefs.log'`);
+                                } catch (e) {
+                                    GLib.spawn_command_line_sync(`bash -lc 'echo "prefs: settings write failed: ${e}" >> /tmp/wg-prefs.log'`);
+                                }
+
+                                try {
+                                    let child = rows_group.get_first_child();
+                                    while (child) {
+                                        let next = child.get_next_sibling();    // grab next before removing
+                                        try {
+                                            rows_group.remove(child);
+                                        } catch (e) {
+                                            // fallback if remove isn't available on this widget
+                                            const parent = child.get_parent();
+                                            if (parent && parent.remove)
+                                                parent.remove(child);
+                                            else
+                                                child.set_parent(null);
+                                        }
+                                        child = next;
+                                    }
+                                    this._create_rows(rows_group);
+                                    GLib.spawn_command_line_sync(`bash -lc 'echo "prefs: rebuilt rows_group" >> /tmp/wg-prefs.log'`);
+                                } catch (e) {
+                                    GLib.spawn_command_line_sync(`bash -lc 'echo "prefs: _create_rows failed: ${e}" >> /tmp/wg-prefs.log'`);
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        GLib.spawn_command_line_sync(`bash -lc 'echo "prefs: exception in response: ${e}" >> /tmp/wg-prefs.log'`);
+                    } finally {
+                        try { dialog.destroy(); } catch (e) {}
+                    }
+                });
+
+                fc.show();
+                GLib.spawn_command_line_sync(`bash -lc 'echo "prefs: file chooser shown" >> /tmp/wg-prefs.log'`);
+            } catch (e) {
+                GLib.spawn_command_line_sync(`bash -lc 'echo "prefs: exception in clicked handler: ${e}" >> /tmp/wg-prefs.log'`);
+            }
         });
         add_group.add(button);
 
@@ -102,7 +162,6 @@ export default class WireguardPreferences extends ExtensionPreferences {
 
         window.add(page);
     }
-
     _create_rows(group) {
         let configs = stored_configs();
         configs.forEach(c => {

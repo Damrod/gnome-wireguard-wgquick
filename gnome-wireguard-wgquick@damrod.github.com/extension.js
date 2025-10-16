@@ -130,24 +130,40 @@ const Indicator = GObject.registerClass(
 
         _create_switches(menu) {
             this._switches = new Map(); // id -> PopupSwitchMenuItem
+
+            // ----- status section at top (non-interactive) -----
+            let statusSection = new PopupMenu.PopupMenuSection();
+            let active = active_interfaces();
+            if (active.length > 0) {
+                let id = active[0];
+                let out = run_sync(`bash -c "sudo wg show ${id} 2>/dev/null || echo ''"`);
+                if (out && out.trim().length > 0) {
+                    let lines = this._parse_wg_for_status(out);
+                    lines.forEach(line => {
+                        let mi = new PopupMenu.PopupMenuItem(line, { reactive: false, can_focus: false });
+                        mi.sensitive = false;
+                        statusSection.addMenuItem(mi);
+                    });
+                } else {
+                    let mi = new PopupMenu.PopupMenuItem(_('No Wireguard status available'), { reactive: false, can_focus: false });
+                    mi.sensitive = false;
+                    statusSection.addMenuItem(mi);
+                }
+            } else {
+                let mi = new PopupMenu.PopupMenuItem(_('No Wireguard tunnel active'), { reactive: false, can_focus: false });
+                mi.sensitive = false;
+                statusSection.addMenuItem(mi);
+            }
+            menu.addMenuItem(statusSection);
+            menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+            // ----------------------------------------------------
+
             let configs = list_configs();
             configs.forEach(cfg => {
                 this._add_switch(menu, new WGConnection(cfg.id, cfg.path));
             });
 
-            // single Show Status item for currently active tunnel (unchanged)
-            let showStatus = new PopupMenu.PopupMenuItem(_('Show status'));
-            showStatus.connect('activate', () => {
-                let active = active_interfaces();
-                if (active.length === 0) {
-                    Main.notify(_('No Wireguard tunnel active'));
-                    return;
-                }
-                let id = active[0];
-                let out = run_sync(`bash -c "sudo wg show ${id} 2>/dev/null || echo 'No output'"`);
-                Main.notify(_('Wireguard status for ') + id + ' \n' + out.substring(0, 512));
-            });
-            menu.addMenuItem(showStatus);
+            // removed old Show status menu item (status now shown in section above)
 
             this._update_icon();
         }
@@ -208,9 +224,29 @@ const Indicator = GObject.registerClass(
                         });
                     } catch (e) { /* ignore */
                     }
+
+                    // schedule a quick menu refresh so the status section updates after the operation starts
+                    try {
+                        GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => {
+                            try { this._refresh(); } catch (e) { logError(e); }
+                            return GLib.SOURCE_REMOVE;
+                        });
+                        GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 3, () => {
+                            try { this._refresh(); } catch (e) { logError(e); }
+                            return GLib.SOURCE_REMOVE;
+                        });
+                    } catch (e) { /* ignore */ }
                 } else {
                     spawn_async(`sudo /usr/bin/wg-quick down "${connection.path}"`);
                     item.setToggleState(false);
+
+                    // refresh status after turning down
+                    try {
+                        GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => {
+                            try { this._refresh(); } catch (e) { logError(e); }
+                            return GLib.SOURCE_REMOVE;
+                        });
+                    } catch (e) { /* ignore */ }
                 }
             });
 
@@ -221,6 +257,26 @@ const Indicator = GObject.registerClass(
             let extensionObject = Extension.lookupByUUID('gnome-wireguard-wgquick@damrod.github.com');
             let active = active_interfaces();
             this._icon.gicon = Gio.icon_new_for_string(`${extensionObject.path}/icons/${active.length > 0 ? 'wireguard-icon.svg' : 'wireguard-icon-inactive.svg'}`);
+        }
+
+        // parse wg show output and return array of short lines to display
+        _parse_wg_for_status(out) {
+            // interface
+            let iface = (out.match(/^interface:\s*(.+)$/m) || [])[1] || '';
+            // transfer line e.g. "transfer: 527.49 KiB received, 863.55 KiB sent"
+            let transferLine = (out.match(/transfer:\s*([^\n\r]+)/i) || [])[1] || '';
+            let received = '', sent = '';
+            let m = transferLine.match(/([\d.,]+\s+\w+)\s+received,\s*([\d.,]+\s+\w+)\s+sent/i);
+            if (m) { received = m[1]; sent = m[2]; }
+            // latest handshake
+            let handshake = (out.match(/latest handshake:\s*(.+)$/m) || [])[1] || '';
+
+            let lines = [];
+            if (iface) lines.push(`interface: ${iface}`);
+            if (received) lines.push(`received: ${received}`);
+            if (sent) lines.push(`sent: ${sent}`);
+            if (handshake) lines.push(`latest handshake: ${handshake}`);
+            return lines;
         }
     });
 
@@ -237,6 +293,7 @@ export default class WireguardExtension extends Extension {
         }
     }
 }
+
 
 function init(meta) {
     return new WireguardExtension(meta.uuid);

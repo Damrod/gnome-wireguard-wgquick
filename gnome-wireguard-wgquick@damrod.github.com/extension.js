@@ -129,12 +129,13 @@ const Indicator = GObject.registerClass(
         }
 
         _create_switches(menu) {
+            this._switches = new Map(); // id -> PopupSwitchMenuItem
             let configs = list_configs();
             configs.forEach(cfg => {
                 this._add_switch(menu, new WGConnection(cfg.id, cfg.path));
             });
 
-            // single Show Status item for currently active tunnel
+            // single Show Status item for currently active tunnel (unchanged)
             let showStatus = new PopupMenu.PopupMenuItem(_('Show status'));
             showStatus.connect('activate', () => {
                 let active = active_interfaces();
@@ -155,23 +156,64 @@ const Indicator = GObject.registerClass(
             let item = new PopupMenu.PopupSwitchMenuItem(_(connection.id), false);
             item.set_name(connection.id);
             item._connection = connection;
+
+            // record for later use instead of scanning menu
+            this._switches.set(connection.id, item);
+
             let active = active_interfaces();
             item.setToggleState(active.includes(connection.id));
+
             item.connect('toggled', (item, state) => {
                 if (state === true) {
-                    let actives = active_interfaces();
-                    if (actives.length > 0 && !actives.includes(connection.id)) {
-                        Main.notify(_('Another Wireguard tunnel is active. Stop it first.'));
-                        item.setToggleState(false);
-                        return;
+                    // compute currently active interfaces except the one we are enabling
+                    let actives = active_interfaces().filter(id => id !== connection.id);
+
+                    // build down commands using stored items' connection.path
+                    let downs = [];
+                    for (let [id, mi] of this._switches) {
+                        if (id !== connection.id && actives.includes(id)) {
+                            // down by config path
+                            downs.push(`sudo /usr/bin/wg-quick down "${mi._connection.path}"`);
+                            try {
+                                mi.setToggleState(false);
+                            } catch (e) {
+                                logError(e);
+                            }
+                        }
                     }
-                    spawn_async(`sudo /usr/bin/wg-quick up "${connection.path}"`);
-                    Main.notify(_('Wireguard ') + connection.id + _(' activating'));
+
+                    // prevent extra clicks while transition starts
+                    try {
+                        item.setSensitive(false);
+                    } catch (e) { /* ignore */
+                    }
+
+                    // run downs serially and then up. use ';' so a failing down doesn't block the up.
+                    let cmd;
+                    if (downs.length > 0) {
+                        cmd = `bash -c '${downs.join(' ; ')} ; sleep 0.1 ; sudo /usr/bin/wg-quick up "${connection.path}"'`;
+                    } else {
+                        cmd = `sudo /usr/bin/wg-quick up "${connection.path}"`;
+                    }
+                    spawn_async(cmd);
+
+                    // re-enable the switch shortly after starting the operation
+                    try {
+                        GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => {
+                            try {
+                                item.setSensitive(true);
+                            } catch (e) { /* ignore */
+                            }
+                            return GLib.SOURCE_REMOVE;
+                        });
+                    } catch (e) { /* ignore */
+                    }
                 } else {
                     spawn_async(`sudo /usr/bin/wg-quick down "${connection.path}"`);
-                    Main.notify(_('Wireguard ') + connection.id + _(' deactivating'));
+                    item.setToggleState(false);
                 }
             });
+
             menu.addMenuItem(item);
         }
 
